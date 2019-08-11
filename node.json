@@ -1,0 +1,9 @@
+{
+  "NodeID": "1",
+  "Listen": "127.0.0.1:8000",
+  "IpfsAddr": "127.0.0.1:5001",
+  "IpfsGateway": "http://127.0.0.1:8080",
+  "Key": "123",
+  "ThreadNum": 2,
+  "Verbose": true
+}
