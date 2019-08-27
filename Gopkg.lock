@@ -26,6 +26,14 @@
   version = "v3.2.0"
 
 [[projects]]
+  digest = "1:d64cb03adcca1c9a4e1137281bd53162e2647a807cc5d0ed14deab8af2b18c1e"
+  name = "github.com/go-resty/resty"
+  packages = ["."]
+  pruneopts = "UT"
+  revision = "d467d573085e42a848cb49c1c28ba163b7aa5872"
+  version = "v2.0.0"
+
+[[projects]]
   digest = "1:48092bf6632f55839850666c33469f546f6d45fdbd59a66759ec12e84d853dc2"
   name = "github.com/gogo/protobuf"
   packages = ["proto"]
@@ -335,9 +343,12 @@
 
 [[projects]]
   branch = "master"
-  digest = "1:15a159ca3e34c429f800dd822cbb37707e98552c9523b8d07fdd244dba62f04b"
+  digest = "1:ca4442090e3e524b7ff835c78b666db1a1a03211995ab2847a28e3c9b69af608"
   name = "golang.org/x/net"
-  packages = ["idna"]
+  packages = [
+    "idna",
+    "publicsuffix",
+  ]
   pruneopts = "UT"
   revision = "ca1201d0de80cfde86cb01aea620983605dfe99b"
 
@@ -383,6 +394,7 @@
   analyzer-version = 1
   input-imports = [
     "github.com/cyberdelia/go-metrics-graphite",
+    "github.com/go-resty/resty",
     "github.com/ipfs/go-ipfs-api",
     "github.com/jinzhu/gorm",
     "github.com/jinzhu/gorm/dialects/postgres",

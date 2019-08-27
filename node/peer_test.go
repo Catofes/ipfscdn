@@ -1,16 +1,17 @@
 package node
 
 import (
-	"context"
 	"testing"
 
 	shell "github.com/ipfs/go-ipfs-api"
 )
 
 func TestIPFS(t *testing.T) {
-	p, e := shell.NewLocalShell().SwarmPeers(context.Background())
+	p, e := shell.NewLocalShell().ID()
 	if e != nil {
 		t.Error(e)
 	}
-	t.Log(p)
+	for _, v := range p.Addresses {
+		t.Log(v)
+	}
 }

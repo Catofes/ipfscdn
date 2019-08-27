@@ -16,15 +16,17 @@ type node struct {
 	sql.Node
 	ctx  context.Context
 	done context.CancelFunc
+	m    *manager
 }
 
-func (s *node) init() *node {
+func (s *node) init(m *manager) *node {
 	s.ctx, s.done = context.WithCancel(context.Background())
+	s.m = m
 	return s
 }
 
 func (s *node) ping() bool {
-	response, err := http.Get(s.WebAddress + "/generate_204")
+	response, err := http.Get(s.Address + "/generate_204")
 	if err != nil {
 		return false
 	}
@@ -61,14 +63,4 @@ func (s *node) loop() {
 	}()
 }
 
-func (s *node) get(file *sql.File) (*http.Response, error) {
-	response, err := http.Get(fmt.Sprintf("%s/file/%s", s.WebAddress, file.Hash))
-	if err != nil && response.StatusCode == 200 {
-		return response, nil
-	}
-	log.Warning("")
-	if err != nil {
-		return nil, err
-	}
-	return nil, errors.New("bad response ")
-}
+func (s *node)

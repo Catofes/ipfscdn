@@ -16,9 +16,9 @@ const (
 //Node struct in database store everything that manager need known.
 type Node struct {
 	gorm.Model
-	WebAddress string
-	PrivateKey string
-	Online     bool
-	DiskSize   int64
-	Type       int
+	Hash     string `gorm:"not_null;unique;index"`
+	Address  string
+	Online   bool
+	DiskSize int64
+	Type     int
 }

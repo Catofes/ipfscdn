@@ -2,39 +2,62 @@ package node
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/rpc"
 	"net/url"
+	"strings"
 	"time"
 
+	rnode "github.com/Catofes/ipfscdn/rpc"
 	shell "github.com/ipfs/go-ipfs-api"
 	"github.com/labstack/echo"
 	"github.com/labstack/echo/middleware"
 )
 
-type node struct {
+type Node struct {
 	config
 	web      *echo.Echo
 	ipfs     *shell.Shell
 	commands *queue
-	peers    map[string]peer
+	peers    map[string]*peer
+	ipfsAddr []string
 }
 
-func (s *node) init() *node {
+func (s *Node) init() *Node {
 	s.web = echo.New()
-	s.ipfs = shell.NewShell(s.IpfsAddr)
+	s.ipfs = shell.NewShell(s.IpfsAPI)
 	s.commands = (&queue{}).init(100)
-	//s.nodes = make(map[string]peer)
+	s.peers = make(map[string]*peer)
 	s.webBind()
+	rnode.RegisterNodeService(s)
 	return s
 }
 
-func (s *node) loop() {
+func (s *Node) rpcloop() {
+	listener, err := net.Listen("tcp", s.RPCListen)
+	if err != nil {
+		log.Fatal("ListenRPC error:", err)
+	}
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Fatal("Accept error:", err)
+		}
+		go rpc.ServeConn(conn)
+	}
+}
+
+func (s *Node) loop() {
 	s.handleCommands()
+	go s.rpcloop()
 	s.web.Start(s.Listen)
 }
 
-func (s *node) webBind() {
+func (s *Node) webBind() {
 	s.web.Use(middleware.Recover())
 	auth := middleware.KeyAuth(func(k string, c echo.Context) (bool, error) {
 		if k == s.config.Key {
@@ -49,7 +72,7 @@ func (s *node) webBind() {
 	s.web.GET("/file/:hash", s.getFile)
 }
 
-func (s *node) getFile(ctx echo.Context) error {
+func (s *Node) getFile(ctx echo.Context) error {
 	fileHash := ctx.Param("hash")
 	if fileHash == "" {
 		return ctx.NoContent(http.StatusBadRequest)
@@ -89,11 +112,104 @@ func (s *node) getFile(ctx echo.Context) error {
 	return nil
 }
 
-func (s *node) generate204(ctx echo.Context) error {
+func (s *Node) generate204(ctx echo.Context) error {
 	return ctx.NoContent(http.StatusNoContent)
 }
 
-func (s *node) pinFile(ctx echo.Context) error {
+var _ rnode.NodeService = (*Node)(nil)
+
+func (s *Node) Pin(fileHash string, result *bool) error {
+	status := false
+	defer func() { result = &status }()
+	log.Debug("[%s] pin file.", fileHash)
+	pinInfos, err := s.ipfs.Pins()
+	if err != nil {
+		log.Debug("[%s] cache error, %s.", fileHash, err)
+		return err
+	}
+	if fileHash == "" {
+		return errors.New("empty hash")
+	}
+	if _, ok := pinInfos[fileHash]; ok {
+		status = true
+		return nil
+	}
+	if c := s.commands.get("pin:" + fileHash); c != nil {
+		return nil
+	}
+	if c := s.commands.get("unpin:" + fileHash); c != nil {
+		s.commands.del("unpin:" + fileHash)
+	}
+	cc, cf := context.WithCancel(context.Background())
+	s.commands.push(&command{
+		c:   "pin",
+		a:   fileHash,
+		ctx: cc,
+		cf:  cf,
+	})
+	return nil
+}
+
+func (s *Node) UnPin(fileHash string, result *bool) error {
+	status := false
+	defer func() { result = &status }()
+	log.Debug("[%s] unpin file.", fileHash)
+	pinInfos, err := s.ipfs.Pins()
+	if err != nil {
+		log.Debug("[%s] unpin error, %s.", fileHash, err)
+		return err
+	}
+	if fileHash == "" {
+		return nil
+	}
+	if _, ok := pinInfos[fileHash]; !ok {
+		status = true
+		return nil
+	}
+	if c := s.commands.get("unpin:" + fileHash); c != nil {
+		return nil
+	}
+	if c := s.commands.get("pin:" + fileHash); c != nil {
+		s.commands.del("pin:" + fileHash)
+	}
+	cc, cf := context.WithCancel(context.Background())
+	s.commands.push(&command{
+		c:   "unpin",
+		a:   fileHash,
+		ctx: cc,
+		cf:  cf,
+	})
+	return nil
+}
+
+func (s *Node) Connect(node rnode.NodeInfo, _ *bool) error {
+	log.Debug("[%s] add swarm %v.", node.NodeID, node.IpfsPath)
+	if v, ok := s.peers[node.NodeID]; ok {
+		v.addPath(node.IpfsPath, node.NodeAddr)
+	} else {
+		p := (&peer{NodeID: node.NodeID}).init(s)
+		p.addPath(node.IpfsPath, node.NodeAddr)
+		s.peers[node.NodeID] = p
+		go p.loop()
+	}
+	return nil
+}
+
+func (s *Node) List(_ bool, lists *rnode.FileLists) error {
+	pinInfos, err := s.ipfs.Pins()
+	if err != nil {
+		log.Error("Get pins error %s.", err)
+		return err
+	}
+	lists = &pinInfos
+	return nil
+}
+
+func (s *Node) Ping(_ bool, result *bool) error {
+	return nil
+}
+
+func (s *Node) pinFile(ctx echo.Context) error {
 	fileHash := ctx.Param("hash")
 	log.Debug("[%s] pin file.", fileHash)
 	pinInfos, err := s.ipfs.Pins()
@@ -123,7 +239,7 @@ func (s *node) pinFile(ctx echo.Context) error {
 	return ctx.NoContent(http.StatusAccepted)
 }
 
-func (s *node) unPinFile(ctx echo.Context) error {
+func (s *Node) unPinFile(ctx echo.Context) error {
 	fileHash := ctx.Param("hash")
 	log.Debug("[%s] unpin file.", fileHash)
 	pinInfos, err := s.ipfs.Pins()
@@ -153,22 +269,23 @@ func (s *node) unPinFile(ctx echo.Context) error {
 	return ctx.NoContent(http.StatusAccepted)
 }
 
-func (s *node) addSwarm(ctx echo.Context) error {
-	nodeHash := ctx.Param("hash")
-	type nodeAddr struct {
-		Addr string
-	}
-	node := nodeAddr{}
+func (s *Node) addSwarm(ctx echo.Context) error {
+	nodeID := ctx.Param("hash")
+	node := nodeInfo{}
 	ctx.Bind(&node)
-	log.Debug("[%s] add swarm %s.", nodeHash, node.Addr)
-	err := s.ipfs.SwarmConnect(context.Background(), node.Addr)
-	if err != nil {
-		return ctx.String(http.StatusBadGateway, err.Error())
+	log.Debug("[%s] add swarm %v.", nodeID, node.IpfsPath)
+	if v, ok := s.peers[nodeID]; ok {
+		v.addPath(node.IpfsPath, node.NodeAddr)
+	} else {
+		p := (&peer{NodeID: nodeID}).init(s)
+		p.addPath(node.IpfsPath, node.NodeAddr)
+		s.peers[nodeID] = p
+		go p.loop()
 	}
 	return ctx.NoContent(http.StatusOK)
 }
 
-func (s *node) getPins(ctx echo.Context) error {
+func (s *Node) getPins(ctx echo.Context) error {
 	pinInfos, err := s.ipfs.Pins()
 	if err != nil {
 		log.Error("Get pins error %s.", err)
@@ -177,7 +294,7 @@ func (s *node) getPins(ctx echo.Context) error {
 	return ctx.JSON(http.StatusOK, pinInfos)
 }
 
-func (s *node) handleCommands() {
+func (s *Node) handleCommands() {
 	t := func() {
 		for {
 			c := <-s.commands.c
@@ -196,7 +313,7 @@ func (s *node) handleCommands() {
 	}()
 }
 
-func (s *node) handleACommand(c *command) {
+func (s *Node) handleACommand(c *command) {
 	defer c.cf()
 	select {
 	case <-c.ctx.Done():
@@ -215,12 +332,7 @@ func (s *node) handleACommand(c *command) {
 	}
 }
 
-func (s *node) sync() error {
-	type request struct {
-		NodeID   string
-		NodeAddr string
-		IpfsPath []string
-	}
+func (s *Node) sync() error {
 	// rd := request{
 	// 	NodeID:   s.NodeID,
 	// 	NodeAddr: s.NodeAddr,
@@ -230,8 +342,65 @@ func (s *node) sync() error {
 		log.Warning("Get node info failed: %s.", err.Error())
 		return err
 	}
+	s.ipfsAddr = make([]string, 0)
+
 	for _, v := range ipfsInfo.Addresses {
-		log.Debug(v)
+		t := strings.Split(v, "/")
+		if len(t) < 2 {
+			continue
+		}
+		addr := net.ParseIP(t[1])
+		if addr == nil {
+			continue
+		}
+		if isPrivateIP(addr) {
+			continue
+		} else {
+			s.ipfsAddr = append(s.ipfsAddr, v+ipfsInfo.ID)
+		}
 	}
+
+	r := nodeInfo{
+		NodeID:   ipfsInfo.ID,
+		NodeAddr: s.config.NodeAddr,
+		IpfsPath: s.ipfsAddr,
+		DiskSize: s.config.DiskSize,
+		Type:     s.config.Type,
+	}
+	result := make(map[string]nodeInfo)
+	response, err := rest.R().
+		SetAuthToken(s.config.Key).
+		SetBody(r).
+		SetResult(&result).
+		Put("%s/init/")
+	if err != nil {
+		return err
+	}
+	if response.StatusCode() != http.StatusOK {
+		return fmt.Errorf("sync to manager failed, http code: %d", response.StatusCode())
+	}
+	for _, v := range result {
+		if p, ok := s.peers[v.NodeID]; ok {
+			p.addPath(v.IpfsPath, v.NodeAddr)
+		} else {
+			p := (&peer{NodeID: v.NodeID}).init(s)
+			p.addPath(v.IpfsPath, v.NodeAddr)
+			s.peers[v.NodeID] = p
+			go p.loop()
+		}
+	}
+
 	return nil
+}
+
+func (s *Node) syncLoop() {
+	for {
+		err := s.sync()
+		if err != nil {
+			log.Debugf("Sync to manager failed: %s.", err.Error())
+			time.Sleep(1 * time.Minute)
+			continue
+		}
+		time.Sleep(1 * time.Hour)
+	}
 }
