@@ -2,11 +2,11 @@ package node
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"math/rand"
 	"sync"
 	"time"
+
+	rnode "github.com/Catofes/ipfscdn/rpc"
 )
 
 type peer struct {
@@ -47,21 +47,21 @@ func (s *peer) check() bool {
 }
 
 func (s *peer) connectWakeUp() error {
-	response, err := rest.R().
-		SetAuthToken(s.node.config.Key).
-		SetBody(nodeInfo{
-			NodeID:   s.node.NodeID,
-			NodeAddr: s.node.NodeAddr,
-			IpfsPath: s.node.ipfsAddr}).
-		Put(fmt.Sprintf("%s/node/%s", s.webAddress, s.node.NodeID))
-
-	if err != nil && response.StatusCode() == 200 {
-		return nil
-	}
+	client, err := rnode.DialNodeService("tcp", "localhost:1234")
 	if err != nil {
+		log.Debugf("[%s] RPC dail failed, %s.", s.NodeID, err.Error())
 		return err
 	}
-	return errors.New("bad response ")
+	err = client.Connect(rnode.NodeInfo{
+		NodeID:   s.node.NodeID,
+		NodeAddr: s.node.NodeAddr,
+		IpfsPath: s.node.ipfsAddr,
+	}, nil)
+	if err != nil {
+		log.Debugf("[%s] RPC connect failed, %s.", s.NodeID, err.Error())
+		return err
+	}
+	return nil
 }
 
 func (s *peer) connect() error {
@@ -85,6 +85,6 @@ func (s *peer) loop() {
 			s.online = false
 			s.connect()
 		}
-		time.Sleep(30 * time.Second)
+		time.Sleep(1 * time.Minute)
 	}
 }

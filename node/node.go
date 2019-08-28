@@ -65,11 +65,11 @@ func (s *Node) webBind() {
 		}
 		return false, nil
 	})
-	s.web.PUT("/pin/:hash", s.pinFile, auth)
-	s.web.DELETE("/pin/:hash", s.unPinFile, auth)
-	s.web.PUT("/node/:hash", s.addSwarm, auth)
+	s.web.PUT("/pin/:hash", s.webPin, auth)
+	s.web.DELETE("/pin/:hash", s.webUnPin, auth)
+	s.web.PUT("/node/:hash", s.webConnect, auth)
+	s.web.GET("/file/:hash", s.webList, auth)
 	s.web.GET("/generate_204", s.generate204)
-	s.web.GET("/file/:hash", s.getFile)
 }
 
 func (s *Node) getFile(ctx echo.Context) error {
@@ -118,24 +118,25 @@ func (s *Node) generate204(ctx echo.Context) error {
 
 var _ rnode.NodeService = (*Node)(nil)
 
-func (s *Node) Pin(fileHash string, result *bool) error {
-	status := false
-	defer func() { result = &status }()
+func (s *Node) Ping(_ bool, result *bool) error {
+	return nil
+}
+
+func (s *Node) pin(fileHash string) (bool, error) {
 	log.Debug("[%s] pin file.", fileHash)
 	pinInfos, err := s.ipfs.Pins()
 	if err != nil {
 		log.Debug("[%s] cache error, %s.", fileHash, err)
-		return err
+		return false, err
 	}
 	if fileHash == "" {
-		return errors.New("empty hash")
+		return false, errors.New("empty file hash")
 	}
 	if _, ok := pinInfos[fileHash]; ok {
-		status = true
-		return nil
+		return true, nil
 	}
 	if c := s.commands.get("pin:" + fileHash); c != nil {
-		return nil
+		return false, nil
 	}
 	if c := s.commands.get("unpin:" + fileHash); c != nil {
 		s.commands.del("unpin:" + fileHash)
@@ -147,27 +148,42 @@ func (s *Node) Pin(fileHash string, result *bool) error {
 		ctx: cc,
 		cf:  cf,
 	})
-	return nil
+	return false, nil
 }
 
-func (s *Node) UnPin(fileHash string, result *bool) error {
-	status := false
-	defer func() { result = &status }()
+func (s *Node) webPin(ctx echo.Context) error {
+	fileHash := ctx.Param("hash")
+	result, err := s.pin(fileHash)
+	if err != nil {
+		return ctx.NoContent(http.StatusBadRequest)
+	} else if result {
+		return ctx.NoContent(http.StatusOK)
+	} else {
+		return ctx.NoContent(http.StatusAccepted)
+	}
+}
+
+func (s *Node) Pin(fileHash string, result *bool) error {
+	status, err := s.pin(fileHash)
+	result = &status
+	return err
+}
+
+func (s *Node) unPin(fileHash string) (bool, error) {
 	log.Debug("[%s] unpin file.", fileHash)
 	pinInfos, err := s.ipfs.Pins()
 	if err != nil {
 		log.Debug("[%s] unpin error, %s.", fileHash, err)
-		return err
+		return false, err
 	}
 	if fileHash == "" {
-		return nil
+		return false, nil
 	}
 	if _, ok := pinInfos[fileHash]; !ok {
-		status = true
-		return nil
+		return true, nil
 	}
 	if c := s.commands.get("unpin:" + fileHash); c != nil {
-		return nil
+		return false, nil
 	}
 	if c := s.commands.get("pin:" + fileHash); c != nil {
 		s.commands.del("pin:" + fileHash)
@@ -179,10 +195,28 @@ func (s *Node) UnPin(fileHash string, result *bool) error {
 		ctx: cc,
 		cf:  cf,
 	})
-	return nil
+	return false, nil
 }
 
-func (s *Node) Connect(node rnode.NodeInfo, _ *bool) error {
+func (s *Node) UnPin(fileHash string, result *bool) error {
+	status, err := s.unPin(fileHash)
+	result = &status
+	return err
+}
+
+func (s *Node) webUnPin(ctx echo.Context) error {
+	fileHash := ctx.Param("hash")
+	result, err := s.pin(fileHash)
+	if err != nil {
+		return ctx.NoContent(http.StatusBadRequest)
+	} else if result {
+		return ctx.NoContent(http.StatusOK)
+	} else {
+		return ctx.NoContent(http.StatusAccepted)
+	}
+}
+
+func (s *Node) connect(node rnode.NodeInfo) error {
 	log.Debug("[%s] add swarm %v.", node.NodeID, node.IpfsPath)
 	if v, ok := s.peers[node.NodeID]; ok {
 		v.addPath(node.IpfsPath, node.NodeAddr)
@@ -195,100 +229,37 @@ func (s *Node) Connect(node rnode.NodeInfo, _ *bool) error {
 	return nil
 }
 
-func (s *Node) List(_ bool, lists *rnode.FileLists) error {
-	pinInfos, err := s.ipfs.Pins()
-	if err != nil {
-		log.Error("Get pins error %s.", err)
-		return err
-	}
-	lists = &pinInfos
-	return nil
+func (s *Node) Connect(node rnode.NodeInfo, _ *bool) error {
+	return s.connect(node)
 }
 
-func (s *Node) Ping(_ bool, result *bool) error {
-	return nil
-}
-
-func (s *Node) pinFile(ctx echo.Context) error {
-	fileHash := ctx.Param("hash")
-	log.Debug("[%s] pin file.", fileHash)
-	pinInfos, err := s.ipfs.Pins()
-	if err != nil {
-		log.Debug("[%s] cache error, %s.", fileHash, err)
-		return ctx.String(http.StatusBadGateway, err.Error())
-	}
-	if fileHash == "" {
-		return ctx.NoContent(http.StatusBadRequest)
-	}
-	if _, ok := pinInfos[fileHash]; ok {
-		return ctx.NoContent(http.StatusOK)
-	}
-	if c := s.commands.get("pin:" + fileHash); c != nil {
-		return ctx.NoContent(http.StatusAccepted)
-	}
-	if c := s.commands.get("unpin:" + fileHash); c != nil {
-		s.commands.del("unpin:" + fileHash)
-	}
-	cc, cf := context.WithCancel(context.Background())
-	s.commands.push(&command{
-		c:   "pin",
-		a:   fileHash,
-		ctx: cc,
-		cf:  cf,
-	})
-	return ctx.NoContent(http.StatusAccepted)
-}
-
-func (s *Node) unPinFile(ctx echo.Context) error {
-	fileHash := ctx.Param("hash")
-	log.Debug("[%s] unpin file.", fileHash)
-	pinInfos, err := s.ipfs.Pins()
-	if err != nil {
-		log.Debug("[%s] unpin error, %s.", fileHash, err)
-		return ctx.String(http.StatusBadGateway, err.Error())
-	}
-	if fileHash == "" {
-		return ctx.NoContent(http.StatusBadRequest)
-	}
-	if _, ok := pinInfos[fileHash]; !ok {
-		return ctx.NoContent(http.StatusOK)
-	}
-	if c := s.commands.get("unpin:" + fileHash); c != nil {
-		return ctx.NoContent(http.StatusAccepted)
-	}
-	if c := s.commands.get("pin:" + fileHash); c != nil {
-		s.commands.del("pin:" + fileHash)
-	}
-	cc, cf := context.WithCancel(context.Background())
-	s.commands.push(&command{
-		c:   "unpin",
-		a:   fileHash,
-		ctx: cc,
-		cf:  cf,
-	})
-	return ctx.NoContent(http.StatusAccepted)
-}
-
-func (s *Node) addSwarm(ctx echo.Context) error {
-	nodeID := ctx.Param("hash")
-	node := nodeInfo{}
+func (s *Node) webConnect(ctx echo.Context) error {
+	node := rnode.NodeInfo{}
 	ctx.Bind(&node)
-	log.Debug("[%s] add swarm %v.", nodeID, node.IpfsPath)
-	if v, ok := s.peers[nodeID]; ok {
-		v.addPath(node.IpfsPath, node.NodeAddr)
-	} else {
-		p := (&peer{NodeID: nodeID}).init(s)
-		p.addPath(node.IpfsPath, node.NodeAddr)
-		s.peers[nodeID] = p
-		go p.loop()
+	err := s.connect(node)
+	if err != nil {
+		return ctx.String(http.StatusBadRequest, err.Error())
 	}
 	return ctx.NoContent(http.StatusOK)
 }
 
-func (s *Node) getPins(ctx echo.Context) error {
+func (s *Node) list() (*rnode.FileLists, error) {
 	pinInfos, err := s.ipfs.Pins()
 	if err != nil {
 		log.Error("Get pins error %s.", err)
+		return nil, err
+	}
+	return &pinInfos, nil
+}
+
+func (s *Node) List(_ bool, lists *rnode.FileLists) error {
+	lists, err := s.list()
+	return err
+}
+
+func (s *Node) webList(ctx echo.Context) error {
+	pinInfos, err := s.list()
+	if err != nil {
 		return ctx.String(http.StatusBadGateway, err.Error())
 	}
 	return ctx.JSON(http.StatusOK, pinInfos)

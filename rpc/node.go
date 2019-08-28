@@ -36,9 +36,10 @@ type NodeServiceClient struct {
 
 var _ NodeService = (*NodeServiceClient)(nil)
 
-func DialHelloService(network, address string) (*NodeServiceClient, error) {
+func DialNodeService(network, address string) (*NodeServiceClient, error) {
 	c, err := rpc.Dial(network, address)
 	if err != nil {
+
 		return nil, err
 	}
 	return &NodeServiceClient{Client: c}, nil
